@@ -1096,6 +1096,34 @@ fun StatsScreen(onBack: () -> Unit) {
 
     val filteredLogs = if (selectedMode == "All") logs else logs.filter { it.mode.startsWith(selectedMode) }
 
+    // Group logs into sessions
+    // For Simon games, a session is a single LogEntry (the end of the game).
+    // For Numbers, we group sequential entries that happened very close together (within 1 min).
+    val sessions = remember(filteredLogs) {
+        val list = mutableListOf<List<LogEntry>>()
+        if (filteredLogs.isEmpty()) return@remember list
+        
+        var currentSession = mutableListOf<LogEntry>()
+        for (i in filteredLogs.indices) {
+            val entry = filteredLogs[i]
+            if (currentSession.isEmpty()) {
+                currentSession.add(entry)
+            } else {
+                val prev = currentSession.last()
+                val diff = Math.abs(entry.timestamp - prev.timestamp)
+                // Same mode and within 2 minutes = same session
+                if (entry.mode == prev.mode && diff < 120_000) {
+                    currentSession.add(entry)
+                } else {
+                    list.add(currentSession)
+                    currentSession = mutableListOf(entry)
+                }
+            }
+        }
+        if (currentSession.isNotEmpty()) list.add(currentSession)
+        list
+    }
+
     var showClearDialog by remember { mutableStateOf(false) }
     var pinInput by remember { mutableStateOf("") }
     var pinError by remember { mutableStateOf(false) }
@@ -1195,16 +1223,16 @@ fun StatsScreen(onBack: () -> Unit) {
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 item {
-                    SummaryCards(filteredLogs)
+                    SummaryCards(filteredLogs, selectedMode)
                 }
 
                 item {
                     Text(
-                        "Accuracy Trend (Last 7 Days)",
+                        "Progress Trend",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
-                    AccuracyChart(filteredLogs)
+                    AccuracyChart(filteredLogs, selectedMode)
                 }
 
                 item {
@@ -1213,7 +1241,7 @@ fun StatsScreen(onBack: () -> Unit) {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Recent History", style = MaterialTheme.typography.titleMedium)
+                        Text("Session History", style = MaterialTheme.typography.titleMedium)
                         TextButton(onClick = {
                             showClearDialog = true
                         }) {
@@ -1222,8 +1250,8 @@ fun StatsScreen(onBack: () -> Unit) {
                     }
                 }
 
-                items(filteredLogs.take(50)) { entry ->
-                    HistoryItem(entry)
+                items(sessions) { session ->
+                    SessionItem(session)
                 }
             }
         }
@@ -1231,16 +1259,87 @@ fun StatsScreen(onBack: () -> Unit) {
 }
 
 @Composable
-fun SummaryCards(logs: List<LogEntry>) {
+fun SummaryCards(logs: List<LogEntry>, mode: String) {
     val total = logs.size
-    val correct = logs.count { it.correct }
-    val accuracy = if (total > 0) (correct * 100 / total) else 0
-    val bestLength = if (logs.isNotEmpty()) logs.maxOf { it.length } else 0
+    val bestScore = if (logs.isNotEmpty()) logs.maxOf { it.length } else 0
+    val isSimon = mode.contains("Simon")
 
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        StatCard("Accuracy", "$accuracy%", Modifier.weight(1f), MaterialTheme.colorScheme.primaryContainer)
-        StatCard("Attempts", "$total", Modifier.weight(1f), MaterialTheme.colorScheme.secondaryContainer)
-        StatCard("Best Score", "$bestLength", Modifier.weight(1f), MaterialTheme.colorScheme.tertiaryContainer)
+        if (!isSimon) {
+            val correct = logs.count { it.correct }
+            val accuracy = if (total > 0) (correct * 100 / total) else 0
+            StatCard("Accuracy", "$accuracy%", Modifier.weight(1f), MaterialTheme.colorScheme.primaryContainer)
+        }
+        StatCard("Total Trials", "$total", Modifier.weight(1f), MaterialTheme.colorScheme.secondaryContainer)
+        StatCard("Best Length", "$bestScore", Modifier.weight(1f), MaterialTheme.colorScheme.tertiaryContainer)
+    }
+}
+
+@Composable
+fun SessionItem(entries: List<LogEntry>) {
+    var expanded by remember { mutableStateOf(false) }
+    val first = entries.first()
+    val timeStr = SimpleDateFormat("MMM dd, HH:mm", Locale.US).format(Date(first.timestamp))
+    val mode = first.mode
+    val isSimon = mode.contains("Simon")
+    
+    val totalTrials = entries.size
+    val correctTrials = entries.count { it.correct }
+    val maxLen = entries.maxOf { it.length }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clickable { expanded = !expanded },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(mode, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                    Text(timeStr, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+                
+                Column(horizontalAlignment = Alignment.End) {
+                    if (isSimon) {
+                        Text("Level $maxLen", fontWeight = FontWeight.ExtraBold)
+                    } else {
+                        Text("$correctTrials / $totalTrials", fontWeight = FontWeight.Bold)
+                        Text("Best: $maxLen", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), thickness = 1.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                Spacer(Modifier.height(8.dp))
+                entries.forEach { entry ->
+                    Row(
+                        modifier = Modifier.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (entry.correct) "✓" else "✗",
+                            color = if (entry.correct) Color(0xFF2E7D32) else Color(0xFFC62828),
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(20.dp)
+                        )
+                        Text(
+                            "Len ${entry.length}: ${entry.sequence} vs ${entry.userResponse}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1261,14 +1360,19 @@ fun StatCard(label: String, value: String, modifier: Modifier = Modifier, contai
 }
 
 @Composable
-fun AccuracyChart(logs: List<LogEntry>) {
+fun AccuracyChart(logs: List<LogEntry>, mode: String) {
     val sdf = SimpleDateFormat("MMM dd", Locale.US)
     val daySdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val isSimon = mode.contains("Simon")
 
-    // Group by day and calc accuracy
+    // Group by day
     val dailyStats = logs.groupBy { daySdf.format(Date(it.timestamp)) }
         .mapValues { (_, entries) ->
-            entries.count { it.correct }.toFloat() / entries.size
+            if (isSimon) {
+                entries.maxOf { it.length }.toFloat()
+            } else {
+                entries.count { it.correct }.toFloat() / entries.size
+            }
         }
         .toList()
         .sortedBy { it.first }
@@ -1277,6 +1381,7 @@ fun AccuracyChart(logs: List<LogEntry>) {
     if (dailyStats.isEmpty()) return
 
     val primaryColor = MaterialTheme.colorScheme.primary
+    val maxVal = if (isSimon) (dailyStats.maxOf { it.second } + 2).coerceAtLeast(10f) else 1f
 
     Card(
         modifier = Modifier.fillMaxWidth().height(200.dp).padding(vertical = 8.dp),
@@ -1301,10 +1406,10 @@ fun AccuracyChart(logs: List<LogEntry>) {
                 }
 
                 // Draw line and points
-                val points = dailyStats.mapIndexed { index, (_, acc) ->
+                val points = dailyStats.mapIndexed { index, (_, value) ->
                     androidx.compose.ui.geometry.Offset(
                         x = index * spacing + spacing / 2,
-                        y = height - (acc * height / maxAccuracy)
+                        y = height - (value * height / maxVal)
                     )
                 }
 
